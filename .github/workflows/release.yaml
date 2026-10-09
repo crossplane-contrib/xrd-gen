@@ -1,0 +1,62 @@
+---
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  EARTHLY_VERSION: '0.8.16'
+
+  # Force Earthly to use color output
+  FORCE_COLOR: "1"
+
+jobs:
+  release:
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write  # Required for creating releases
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Earthly
+        uses: earthly/actions-setup@b81a8e082d9fae6174210cfc6e54bd2feb124d94  # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          version: ${{ env.EARTHLY_VERSION }}
+
+      - name: Extract Version from Tag
+        id: version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          SEMVER_REGEX='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(\.(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(\+[0-9a-zA-Z-]+(\.[0-9a-zA-Z-]+)*)?$'
+          if [[ ! "$VERSION" =~ $SEMVER_REGEX ]]; then
+            echo "Release tag must be strict semver: $VERSION" >&2
+            exit 1
+          fi
+          PRERELEASE=false
+          if [[ -n "${BASH_REMATCH[4]}" ]]; then
+            PRERELEASE=true
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "PRERELEASE=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "Extracted version: $VERSION"
+
+      - name: Build Release Artifacts
+        env:
+          XRD_GEN_VERSION: ${{ steps.version.outputs.VERSION }}
+        run: earthly --strict +multiplatform-build --XRD_GEN_VERSION="$XRD_GEN_VERSION" --RELEASE_ARTIFACTS=true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda  # v3
+        with:
+          tag_name: ${{ steps.version.outputs.VERSION }}
+          files: _output/release/*
+          draft: true
+          generate_release_notes: true
+          prerelease: ${{ steps.version.outputs.PRERELEASE }}

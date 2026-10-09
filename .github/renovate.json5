@@ -1,0 +1,200 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: [
+    'config:recommended',
+    'helpers:pinGitHubActionDigests',
+    ':semanticCommits',
+  ],
+  ignorePresets: [
+    ':ignoreModulesAndTests',
+  ],
+  // We only want renovate to rebase PRs when they have conflicts, default
+  // "auto" mode is not required.
+  rebaseWhen: 'conflicted',
+  // The maximum number of PRs to be created in parallel
+  prConcurrentLimit: 5,
+  // The branches renovate should target
+  baseBranchPatterns: [
+    'main',
+  ],
+  postUpdateOptions: [
+    'gomodTidy',
+    'gomodUpdateImportPaths',
+  ],
+  // All PRs should have a label
+  labels: [
+    'automated',
+  ],
+  customManagers: [
+    {
+      customType: 'regex',
+      description: 'Bump Earthly version in GitHub workflows',
+      managerFilePatterns: [
+        '/^\\.github\\/workflows\\/[^/]+\\.ya?ml$/',
+      ],
+      matchStrings: [
+        "EARTHLY_VERSION: '(?<currentValue>.*?)'\\n",
+      ],
+      datasourceTemplate: 'github-releases',
+      depNameTemplate: 'earthly/earthly',
+      extractVersionTemplate: '^v(?<version>.*)$',
+    },
+    {
+      customType: 'regex',
+      description: 'Bump Go version in the Earthfile',
+      managerFilePatterns: [
+        '/^Earthfile$/',
+      ],
+      matchStrings: [
+        'ARG --global GO_VERSION=(?<currentValue>.*?)\\n',
+      ],
+      datasourceTemplate: 'golang-version',
+      depNameTemplate: 'golang',
+    },
+    {
+      customType: 'regex',
+      description: 'Bump golangci-lint version in the Earthfile',
+      managerFilePatterns: [
+        '/^Earthfile$/',
+      ],
+      matchStrings: [
+        'ARG --global GOLANGCI_LINT_VERSION=(?<currentValue>.*?)\\n',
+      ],
+      datasourceTemplate: 'github-releases',
+      depNameTemplate: 'golangci/golangci-lint',
+    },
+    {
+      customType: 'regex',
+      description: 'Bump go-licenses version in the Earthfile',
+      managerFilePatterns: [
+        '/^Earthfile$/',
+      ],
+      matchStrings: [
+        'ARG --global GO_LICENSES_VERSION=(?<currentValue>.*?)\\n',
+      ],
+      datasourceTemplate: 'github-releases',
+      depNameTemplate: 'google/go-licenses',
+    },
+    {
+      customType: 'regex',
+      description: 'Bump yamllint version in the Earthfile',
+      managerFilePatterns: [
+        '/^Earthfile$/',
+      ],
+      matchStrings: [
+        'ARG --global YAMLLINT_VERSION=(?<currentValue>.*?)\\n',
+      ],
+      datasourceTemplate: 'pypi',
+      depNameTemplate: 'yamllint',
+    },
+    {
+      customType: 'regex',
+      description: 'Bump the Crossplane version the e2e tests install',
+      managerFilePatterns: [
+        '/^Earthfile$/',
+        '/^integrationtest\\/crossplane_test\\.go$/',
+      ],
+      matchStrings: [
+        'ARG --global CROSSPLANE_VERSION=(?<currentValue>.*?)\\n',
+        'defaultCrossplaneVersion = "(?<currentValue>.*?)"',
+      ],
+      datasourceTemplate: 'github-releases',
+      depNameTemplate: 'crossplane/crossplane',
+      extractVersionTemplate: '^v(?<version>.*)$',
+    },
+    {
+      customType: 'regex',
+      description: 'Bump k3d version in the Earthfile',
+      managerFilePatterns: [
+        '/^Earthfile$/',
+      ],
+      matchStrings: [
+        'ARG --global K3D_VERSION=(?<currentValue>.*?)\\n',
+      ],
+      datasourceTemplate: 'github-releases',
+      depNameTemplate: 'k3d-io/k3d',
+      extractVersionTemplate: '^v(?<version>.*)$',
+    },
+    {
+      customType: 'regex',
+      description: 'Bump Helm version in the Earthfile',
+      managerFilePatterns: [
+        '/^Earthfile$/',
+      ],
+      matchStrings: [
+        'ARG --global HELM_VERSION=(?<currentValue>.*?)\\n',
+      ],
+      datasourceTemplate: 'github-releases',
+      depNameTemplate: 'helm/helm',
+      extractVersionTemplate: '^v(?<version>.*)$',
+    },
+    {
+      customType: 'regex',
+      description: 'Bump kubectl version in the Earthfile',
+      managerFilePatterns: [
+        '/^Earthfile$/',
+      ],
+      matchStrings: [
+        'ARG --global KUBECTL_VERSION=(?<currentValue>.*?)\\n',
+      ],
+      datasourceTemplate: 'github-releases',
+      depNameTemplate: 'kubernetes/kubernetes',
+      extractVersionTemplate: '^v(?<version>.*)$',
+    },
+  ],
+  // Renovate doesn't have native Earthfile support, but because Earthfile
+  // syntax is a superset of Dockerfile syntax this works to update FROM images.
+  // https://github.com/renovatebot/renovate/issues/15975
+  dockerfile: {
+    managerFilePatterns: [
+      '/(^|/)Earthfile$/',
+    ],
+  },
+  vulnerabilityAlerts: {
+    enabled: true,
+  },
+  osvVulnerabilityAlerts: true,
+  // Renovate evaluates all packageRules in order, so low priority rules should
+  // be at the beginning, high priority at the end
+  packageRules: [
+    {
+      description: 'Helm 4 changed the repository commands the e2e tests use',
+      matchDepNames: [
+        'helm/helm',
+      ],
+      allowedVersions: '<4.0',
+    },
+    {
+      description: 'Ignore k8s.io/client-go older versions, they switched to semantic version and old tags are still available in the repo',
+      matchDatasources: [
+        'go',
+      ],
+      matchDepNames: [
+        'k8s.io/client-go',
+      ],
+      allowedVersions: '<1.0',
+    },
+    {
+      description: 'Group crossplane and crossplane-runtime (go.mod)',
+      matchPackageNames: [
+        'github.com/crossplane/crossplane/apis/v2',
+        'github.com/crossplane/crossplane-runtime/v2',
+      ],
+      groupName: 'Crossplane v2',
+    },
+    {
+      description: 'Group the e2e Crossplane version with the crossplane go.mod updates',
+      matchDepNames: [
+        'crossplane/crossplane',
+      ],
+      groupName: 'Crossplane v2',
+    },
+    {
+      description: 'Group all go version updates',
+      matchDatasources: [
+        'golang-version',
+      ],
+      groupName: 'golang version',
+    },
+  ],
+}

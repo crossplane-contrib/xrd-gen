@@ -1,0 +1,117 @@
+---
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - release-*
+  pull_request: {}
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# Earthly supports pushing a shared build cache to a container registry, which
+# other Crossplane repositories use to speed up CI. Once this repository lives
+# under crossplane-contrib, each job can pass
+# --remote-cache ghcr.io/crossplane-contrib/xrd-gen/earthly-cache:<job> after
+# logging in to ghcr.io with the workflow token.
+env:
+  EARTHLY_VERSION: '0.8.16'
+
+  # Force Earthly to use color output
+  FORCE_COLOR: "1"
+
+jobs:
+  check-diff:
+    runs-on: ubuntu-26.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Setup Earthly
+        uses: earthly/actions-setup@b81a8e082d9fae6174210cfc6e54bd2feb124d94  # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          version: ${{ env.EARTHLY_VERSION }}
+
+      - name: Tidy Modules
+        run: earthly --strict +tidy
+
+      - name: Count Changed Files
+        id: changed_files
+        run: echo "count=$(git status --porcelain | wc -l)" >> $GITHUB_OUTPUT
+
+      - name: Fail if Files Changed
+        if: steps.changed_files.outputs.count != 0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9
+        with:
+          script: core.setFailed('Found changed files after running earthly +tidy.')
+
+  lint:
+    runs-on: ubuntu-26.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Setup Earthly
+        uses: earthly/actions-setup@b81a8e082d9fae6174210cfc6e54bd2feb124d94  # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          version: ${{ env.EARTHLY_VERSION }}
+
+      - name: Lint
+        run: earthly --strict +lint
+
+  licenses:
+    runs-on: ubuntu-26.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Setup Earthly
+        uses: earthly/actions-setup@b81a8e082d9fae6174210cfc6e54bd2feb124d94  # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          version: ${{ env.EARTHLY_VERSION }}
+
+      - name: Check Dependency Licenses
+        run: earthly --strict +licenses
+
+  unit-tests:
+    runs-on: ubuntu-26.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Setup Earthly
+        uses: earthly/actions-setup@b81a8e082d9fae6174210cfc6e54bd2feb124d94  # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          version: ${{ env.EARTHLY_VERSION }}
+
+      - name: Run Unit Tests
+        run: earthly --strict +test
+
+  e2e-tests:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-26.04
+    needs: [check-diff, lint, licenses, unit-tests]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Setup Earthly
+        uses: earthly/actions-setup@b81a8e082d9fae6174210cfc6e54bd2feb124d94  # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          version: ${{ env.EARTHLY_VERSION }}
+
+      - name: Run E2E Tests
+        run: earthly -P --strict +e2e

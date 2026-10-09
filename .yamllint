@@ -1,0 +1,7 @@
+---
+extends: default
+
+rules:
+  # we have content such as build agents that makes more sense as a single line
+  line-length: disable
+  key-duplicates: enable

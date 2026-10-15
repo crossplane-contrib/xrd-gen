@@ -66,8 +66,7 @@ func GenerateDeepCopy(structs []parsing.Struct, headerFile string) ([]byte, erro
 
 	structInfos := make([]structInfo, 0, len(targetStructs))
 	needsRuntimeImport := false
-	// Map of importPath -> alias (package name)
-	allImports := make(map[string]string)
+	allImports := make(map[importInfo]bool)
 
 	for _, s := range targetStructs {
 		hasTypeMeta := hasInlineTypeMeta(s)
@@ -78,9 +77,17 @@ func GenerateDeepCopy(structs []parsing.Struct, headerFile string) ([]byte, erro
 
 		var fields []fieldCode
 		for _, field := range s.Fields {
+			// Imports are only collected for code that names the field's type.
+			// Fields without copy code are covered by *out = *in, and metadata
+			// fields are copied by assignment or their own deep copy method.
+			// Collecting more could pull in a second package under an alias already
+			// in use.
 			code := generateFieldCode(field, packageName)
-			if code != "" {
-				fields = append(fields, fieldCode{Code: code})
+			if code == "" {
+				continue
+			}
+			fields = append(fields, fieldCode{Code: code})
+			if _, isMetadata := field.Type.(parsing.MetadataType); !isMetadata {
 				collectImports(field.Type, packageName, allImports)
 			}
 		}
@@ -93,7 +100,7 @@ func GenerateDeepCopy(structs []parsing.Struct, headerFile string) ([]byte, erro
 	}
 
 	if needsRuntimeImport {
-		allImports[runtimeImportPath] = runtimeAlias
+		allImports[importInfo{Alias: runtimeAlias, Path: runtimeImportPath}] = true
 	}
 
 	imports := sortImports(allImports)

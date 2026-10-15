@@ -19,11 +19,17 @@ package serialization
 import (
 	"bytes"
 	"fmt"
+	"go/ast"
 	"go/format"
+	"go/parser"
+	"go/token"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"text/template"
+
+	"golang.org/x/tools/go/ast/astutil"
 
 	"github.com/crossplane-contrib/xrd-gen/internal/parsing"
 )
@@ -31,8 +37,6 @@ import (
 const (
 	runtimeImportPath = "k8s.io/apimachinery/pkg/runtime"
 	runtimeAlias      = "runtime"
-	metav1ImportPath  = "k8s.io/apimachinery/pkg/apis/meta/v1"
-	metav1Alias       = "metav1"
 )
 
 type importInfo struct {
@@ -75,7 +79,68 @@ func executeTemplate(tmplName, tmplContent string, data interface{}) ([]byte, er
 		return nil, fmt.Errorf("failed to format generated code: %w", err)
 	}
 
-	return formatted, nil
+	pruned, err := removeUnusedImports(formatted)
+	if err != nil {
+		return nil, fmt.Errorf("failed to remove unused imports from generated code: %w", err)
+	}
+
+	return pruned, nil
+}
+
+// Imports are collected from every field with copy code, but some of that code
+// never names the field's type, so imports it never references are dropped.
+// Usage is checked per alias, since the same package can be imported under
+// more than one alias.
+func removeUnusedImports(src []byte) ([]byte, error) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "", src, parser.ParseComments)
+	if err != nil {
+		return nil, err
+	}
+
+	referenced := make(map[string]bool)
+	ast.Inspect(file, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok {
+			if ident, ok := sel.X.(*ast.Ident); ok && ident.Obj == nil {
+				referenced[ident.Name] = true
+			}
+		}
+		return true
+	})
+
+	type namedImport struct{ name, path string }
+	var unused []namedImport
+	for _, imp := range file.Imports {
+		path, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			return nil, err
+		}
+		var alias string
+		if imp.Name != nil {
+			alias = imp.Name.Name
+		}
+		name := alias
+		if name == "" {
+			name = path[strings.LastIndex(path, "/")+1:]
+		}
+		if name == "_" || name == "." || referenced[name] {
+			continue
+		}
+		unused = append(unused, namedImport{name: alias, path: path})
+	}
+	if len(unused) == 0 {
+		return src, nil
+	}
+
+	for _, imp := range unused {
+		astutil.DeleteNamedImport(fset, file, imp.name, imp.path)
+	}
+
+	var buf bytes.Buffer
+	if err := format.Node(&buf, fset, file); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 func formatHeaderAsComment(header string) string {
@@ -119,28 +184,23 @@ func filterByPackage(structs []parsing.Struct, packageName string) []parsing.Str
 
 // collectImports recursively collects all imports needed for a field type
 // packageName: the current package name (to filter out local types)
-// imports: map to collect import path -> alias
-func collectImports(fieldType parsing.FieldType, packageName string, imports map[string]string) {
+// imports: set of alias and path pairs. Source files can import the same
+// package under different aliases, and the copy code keeps each field's alias.
+func collectImports(fieldType parsing.FieldType, packageName string, imports map[importInfo]bool) {
 	switch t := fieldType.(type) {
 	case parsing.MetadataType:
-		if t.ImportPath == "" {
-			return
-		}
-		// Always use metav1 alias for consistency with Kubernetes conventions
-		if t.ImportPath == metav1ImportPath {
-			imports[t.ImportPath] = metav1Alias
-		} else {
-			imports[t.ImportPath] = t.Package
+		if t.ImportPath != "" {
+			imports[importInfo{Alias: t.Package, Path: t.ImportPath}] = true
 		}
 	case parsing.TimeType:
 		if t.ImportPath != "" {
-			imports[t.ImportPath] = t.Package
+			imports[importInfo{Alias: t.Package, Path: t.ImportPath}] = true
 		}
 	case parsing.StructType:
 		if t.Package == packageName || t.ImportPath == "" {
 			return // Skip local types
 		}
-		imports[t.ImportPath] = t.Package
+		imports[importInfo{Alias: t.Package, Path: t.ImportPath}] = true
 	case parsing.ArrayType:
 		collectImports(t.ElementType, packageName, imports)
 	case parsing.MapType:
@@ -149,22 +209,18 @@ func collectImports(fieldType parsing.FieldType, packageName string, imports map
 	}
 }
 
-// sortImports converts a map of imports to a sorted slice of importInfo
-// for deterministic output
-func sortImports(importsMap map[string]string) []importInfo {
-	importPaths := make([]string, 0, len(importsMap))
-	for path := range importsMap {
-		importPaths = append(importPaths, path)
+// sortImports converts a set of imports to a slice sorted by path, then alias
+func sortImports(importSet map[importInfo]bool) []importInfo {
+	imports := make([]importInfo, 0, len(importSet))
+	for imp := range importSet {
+		imports = append(imports, imp)
 	}
-	sort.Strings(importPaths)
-
-	imports := make([]importInfo, 0, len(importPaths))
-	for _, path := range importPaths {
-		imports = append(imports, importInfo{
-			Alias: importsMap[path],
-			Path:  path,
-		})
-	}
+	sort.Slice(imports, func(i, j int) bool {
+		if imports[i].Path != imports[j].Path {
+			return imports[i].Path < imports[j].Path
+		}
+		return imports[i].Alias < imports[j].Alias
+	})
 	return imports
 }
 

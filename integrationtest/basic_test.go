@@ -304,6 +304,39 @@ spec:
 	require.Equal(t, beforeFixture, afterFixture)
 }
 
+func TestGenerationWithOnlyEmbeddedMetadata(t *testing.T) {
+	requireGeneratedCodeBuilds(t, "embeddedmetaproject", "xwidget.yaml")
+}
+
+func TestGenerationWithExternalStructFields(t *testing.T) {
+	requireGeneratedCodeBuilds(t, "externalstructproject", "xgateway.yaml")
+}
+
+func TestGenerationWithPackageImportedUnderDifferentAliases(t *testing.T) {
+	requireGeneratedCodeBuilds(t, "multialiasproject", "xwidget.yaml")
+}
+
+func requireGeneratedCodeBuilds(t *testing.T, project, xrdFile string) {
+	t.Helper()
+	inputPath := testProjectCopy(t, project)
+	outputPath := filepath.Join(t.TempDir(), "output")
+
+	cmd := exec.Command(xrdGenBinary(t), "go:xrd", "--input-path", inputPath, "--output-path", outputPath)
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.FileExists(t, filepath.Join(outputPath, xrdFile))
+
+	vetCmd := exec.Command("go", "vet", ".")
+	vetCmd.Dir = inputPath
+	vetOutput, err := vetCmd.CombinedOutput()
+	require.NoError(t, err, "Generated code should compile and pass vet: %s", string(vetOutput))
+
+	testCmd := exec.Command("go", "test", "-run", "TestDeepCopy", ".")
+	testCmd.Dir = inputPath
+	testOutput, err := testCmd.CombinedOutput()
+	require.NoError(t, err, "Generated deepcopy tests should pass: %s", string(testOutput))
+}
+
 func xrdGenBinaryName(goos string) string {
 	if goos == "windows" {
 		return "xrd-gen.exe"
@@ -329,7 +362,12 @@ func xrdGenBinary(t *testing.T) string {
 
 func dummyProjectCopy(t *testing.T) string {
 	t.Helper()
-	src, err := filepath.Abs(filepath.Join("testdata", "dummyproject"))
+	return testProjectCopy(t, "dummyproject")
+}
+
+func testProjectCopy(t *testing.T, project string) string {
+	t.Helper()
+	src, err := filepath.Abs(filepath.Join("testdata", project))
 	require.NoError(t, err)
 	dst, err := os.MkdirTemp(filepath.Join("testdata"), "work-")
 	require.NoError(t, err)

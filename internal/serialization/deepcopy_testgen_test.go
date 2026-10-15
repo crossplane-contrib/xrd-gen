@@ -78,6 +78,7 @@ func TestGenerateDeepCopyTests_WithTypeMeta(t *testing.T) {
 	require.Contains(t, codeStr, "func TestDeepCopyObject_MyResource(t *testing.T)")
 	require.Contains(t, codeStr, "func TestDeepCopyObject_MyResource_Nil(t *testing.T)")
 	require.Contains(t, codeStr, "DeepCopyObject()")
+	requireImports(t, []string{`testing "testing"`}, codeStr)
 }
 
 func TestGenerateDeepCopyTests_ComprehensiveCodeCheck(t *testing.T) {

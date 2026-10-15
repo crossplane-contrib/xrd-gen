@@ -251,10 +251,27 @@ func (p *Parser) parseFile(filePath string) ([]Struct, error) {
 
 	var structs []Struct
 
+	// A marker block must start after the end of the previous top-level
+	// declaration. Every declaration moves this boundary (imports, vars, consts,
+	// funcs and types), so comments inside or before one are never taken as
+	// markers for the next type. The first boundary is the position right after
+	// the package name, e.g. after `package api`, so the license header and the
+	// package doc comment are excluded.
+	previousEnd := file.Name.End()
 	for _, decl := range file.Decls {
+		declStart := previousEnd
+		previousEnd = decl.End()
+
 		genDecl, ok := decl.(*ast.GenDecl)
 		if !ok || genDecl.Tok != token.TYPE {
 			continue
+		}
+
+		// Lparen is only set for grouped declarations like `type ( A struct{}; B struct{} )`.
+		// controller-gen treats a comment block above a group as package-level.
+		var markerBlock *ast.CommentGroup
+		if genDecl.Lparen == token.NoPos {
+			markerBlock = p.markerBlockAbove(file.Comments, declStart, genDecl, genDecl.Doc)
 		}
 
 		for _, spec := range genDecl.Specs {
@@ -268,7 +285,7 @@ func (p *Parser) parseFile(filePath string) ([]Struct, error) {
 				continue
 			}
 
-			parsedStruct, err := p.parseStruct(file.Name.Name, typeSpec, structType, genDecl.Doc, imports)
+			parsedStruct, err := p.parseStruct(file.Name.Name, typeSpec, structType, genDecl.Doc, markerBlock, file.Comments, imports)
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse struct %s: %w", typeSpec.Name.Name, err)
 			}
@@ -301,7 +318,48 @@ func (p *Parser) extractImports(file *ast.File) map[string]string {
 	return imports
 }
 
-func (p *Parser) parseStruct(packageName string, typeSpec *ast.TypeSpec, structType *ast.StructType, doc *ast.CommentGroup, imports map[string]string) (Struct, error) {
+// Markers are the `+xrd-gen:` comments this tool reads, e.g.
+// `// +xrd-gen:object:root=true`. Besides the doc comment, they may sit in the
+// closest comment group above it, separated by blank lines, matching
+// controller-gen. Only comments after the end of the previous node count, and a
+// comment on the same line as that end belongs to the previous node.
+func (p *Parser) markerBlockAbove(comments []*ast.CommentGroup, previousEnd token.Pos, node ast.Node, doc *ast.CommentGroup) *ast.CommentGroup {
+	limit := node.Pos()
+	if doc != nil {
+		limit = doc.Pos()
+	}
+	previousLine := p.fset.Position(previousEnd).Line
+
+	var closest *ast.CommentGroup
+	for _, group := range comments {
+		if group.Pos() >= limit {
+			break
+		}
+		if group.Pos() < previousEnd || p.fset.Position(group.Pos()).Line == previousLine {
+			continue
+		}
+		closest = group
+	}
+	return closest
+}
+
+// The separated marker block comes first so that markers in the doc comment
+// take precedence.
+func markerText(markerBlock, doc *ast.CommentGroup) (string, bool) {
+	if markerBlock == nil && doc == nil {
+		return "", false
+	}
+	var text string
+	if markerBlock != nil {
+		text = markerBlock.Text()
+	}
+	if doc != nil {
+		text += doc.Text()
+	}
+	return text, true
+}
+
+func (p *Parser) parseStruct(packageName string, typeSpec *ast.TypeSpec, structType *ast.StructType, doc, markerBlock *ast.CommentGroup, comments []*ast.CommentGroup, imports map[string]string) (Struct, error) {
 	ps := Struct{
 		Name:                  typeSpec.Name.Name,
 		Package:               packageName,
@@ -313,8 +371,10 @@ func (p *Parser) parseStruct(packageName string, typeSpec *ast.TypeSpec, structT
 	}
 
 	if doc != nil {
-		text := doc.Text()
-		ps.Comments = p.parseComments(text)
+		ps.Comments = p.parseComments(doc.Text())
+	}
+
+	if text, ok := markerText(markerBlock, doc); ok {
 		ps.commentAnnotations = p.parseCommentAnnotations(text)
 		printerColumns, err := p.parsePrinterColumns(text)
 		if err != nil {
@@ -337,8 +397,12 @@ func (p *Parser) parseStruct(packageName string, typeSpec *ast.TypeSpec, structT
 	}
 
 	if structType.Fields != nil {
+		previousEnd := structType.Fields.Opening
 		for _, field := range structType.Fields.List {
-			parsedField, err := p.parseField(field, packageName, imports)
+			fieldMarkerBlock := p.markerBlockAbove(comments, previousEnd, field, field.Doc)
+			previousEnd = field.End()
+
+			parsedField, err := p.parseField(field, fieldMarkerBlock, packageName, imports)
 			if err != nil {
 				return Struct{}, err
 			}
@@ -349,17 +413,19 @@ func (p *Parser) parseStruct(packageName string, typeSpec *ast.TypeSpec, structT
 	return ps, nil
 }
 
-func (p *Parser) parseField(field *ast.Field, packageName string, imports map[string]string) (Field, error) {
+func (p *Parser) parseField(field *ast.Field, markerBlock *ast.CommentGroup, packageName string, imports map[string]string) (Field, error) {
 	pf := Field{}
 
 	if len(field.Names) > 0 {
 		pf.Name = field.Names[0].Name
 	}
 
-	annotations := make(map[string]string)
 	if field.Doc != nil {
-		text := field.Doc.Text()
-		pf.Comments = p.parseComments(text)
+		pf.Comments = p.parseComments(field.Doc.Text())
+	}
+
+	annotations := make(map[string]string)
+	if text, ok := markerText(markerBlock, field.Doc); ok {
 		annotations = p.parseCommentAnnotations(text)
 		validations, err := p.parseXValidations(text)
 		if err != nil {
